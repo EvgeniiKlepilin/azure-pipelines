@@ -1,0 +1,137 @@
+name: $(date:yyyyMMdd)$(rev:.r)
+
+trigger: none
+variables:
+- name: BuildParameters.connectedServiceName
+  value: 'Serverless'
+- name: BuildParameters.teamConnServiceName
+  value: 'TeamBuildServiceConnection'
+- group: shared-variables
+
+stages:
+
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      name: Self Hosted
+    steps:
+    - checkout: self
+    - task: NuGetAuthenticate@0
+    - task: VSBuild@1
+      displayName: Build Solution
+      inputs:
+        solution: $(solutionFile)
+        msbuildArgs: '/p:DeployOnBuild=true /p:DeployDefaultTarget=WebPublish /p:WebPublishMethod=FileSystem /p:publishUrl="$(Agent.TempDirectory)\WebAppContent\\" /r '
+        platform: $(BuildPlatform)
+        configuration: $(devBuildConfiguration)
+        restoreNugetPackages: true
+    - task: ArchiveFiles@2
+      displayName: Archive Files
+      inputs:
+        rootFolderOrFile: $(Agent.TempDirectory)\WebAppContent
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        replaceExistingArchive: true
+    - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+      artifact: drop
+    - task: PublishSymbols@2
+      displayName: Publish symbols path
+      continueOnError: True
+      inputs:
+        SearchPattern: '**\bin\**\*.pdb'
+        PublishSymbols: false
+        SymbolServerType: TeamServices
+        
+- stage: dev
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: deployFunctionApp
+    displayName: Deploy Job
+    pool:
+      name: Self Hosted
+    environment: team
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureKeyVault@1
+            displayName: Get Secrets from KeyVault
+            inputs:
+              connectedServiceName: $(BuildParameters.devConnServiceName)
+              KeyVaultName: $(devKeyVault)
+              RunAsPreJob: true
+          - task: AzureFunctionApp@1
+            displayName: Deploy Azure Function App
+            inputs:
+              azureSubscription: $(BuildParameters.devConnServiceName)
+              appType: functionApp
+              appName: $(devFunctionAppName)
+              package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
+              appSettings:
+                -SERVICE_BUS_QUEUE_NAME "sb_queue"
+                -SERVICE_BUS_QUEUE_CONNECTION_STRING "Endpoint=sb://sb-queue-eastus.servicebus.windows.net/;SharedAccessKeyName=sendrule;SharedAccessKey=kZPNcqU02emcDOkjdielvn4EbgdMuu1Zv73ndkvi/k=;EntityPath=sb_queue"
+
+- stage: stage
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: deployFunctionApp
+    displayName: Deploy Job
+    pool:
+      name: Self Hosted
+    environment: team
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureKeyVault@1
+            displayName: Get Secrets from KeyVault
+            inputs:
+              connectedServiceName: $(BuildParameters.stageConnServiceName)
+              KeyVaultName: $(stageKeyVault)
+              RunAsPreJob: true
+          - task: AzureFunctionApp@1
+            displayName: Deploy Azure Function App
+            inputs:
+              azureSubscription: $(BuildParameters.stageConnServiceName)
+              appType: functionApp
+              appName: $(stageFunctionAppName)
+              package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
+              appSettings:
+                -SERVICE_BUS_QUEUE_NAME "sb_queue"
+                -SERVICE_BUS_QUEUE_CONNECTION_STRING "Endpoint=sb://sb-queue-eastus.servicebus.windows.net/;SharedAccessKeyName=sendrule;SharedAccessKey=kZPNcqU02emcDOkjdielvn4EbgdMuu1Zv73ndkvi/k=;EntityPath=sb_queue"
+
+- stage: prod
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: deployFunctionApp
+    displayName: Deploy Job
+    pool:
+      name: Self Hosted
+    environment: team
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureKeyVault@1
+            displayName: Get Secrets from KeyVault
+            inputs:
+              connectedServiceName: $(BuildParameters.prodConnServiceName)
+              KeyVaultName: $(prodKeyVault)
+              RunAsPreJob: true
+          - task: AzureFunctionApp@1
+            displayName: Deploy Azure Function App
+            inputs:
+              azureSubscription: $(BuildParameters.prodConnServiceName)
+              appType: functionApp
+              appName: $(prodFunctionAppName)
+              package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
+              appSettings:
+                -SERVICE_BUS_QUEUE_NAME "sb_queue"
+                -SERVICE_BUS_QUEUE_CONNECTION_STRING "Endpoint=sb://sb-queue-eastus.servicebus.windows.net/;SharedAccessKeyName=sendrule;SharedAccessKey=kZPNcqU02emcDOkjdielvn4EbgdMuu1Zv73ndkvi/k=;EntityPath=sb_queue"
